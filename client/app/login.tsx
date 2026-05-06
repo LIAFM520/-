@@ -12,7 +12,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeRouter } from '@/hooks/useSafeRouter';
-import RNSSE from 'react-native-sse';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const QR_SIZE = SCREEN_WIDTH * 0.65;
@@ -36,6 +35,7 @@ export default function LoginScreen() {
   }, []);
 
   const generateQRCode = async () => {
+    setStep('generating');
     try {
       /**
        * 服务端文件：server/src/routes/auth.ts
@@ -57,30 +57,33 @@ export default function LoginScreen() {
       // 开始轮询扫码状态
       startPollingLoginStatus(data.token);
     } catch (error) {
-      // 模拟数据（演示用）
-      setQrCodeUrl('https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=JD_LOGIN_TOKEN_123456');
-      setLoginToken('JD_LOGIN_TOKEN_123456');
+      console.error('生成二维码失败:', error);
+      // 网络问题，显示错误但不自动模拟
       setStep('waiting');
-      startPollingLoginStatus('JD_LOGIN_TOKEN_123456');
+      // 提供手动测试入口
+      setQrCodeUrl('https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=JD_LOGIN_TEST_TOKEN');
+      setLoginToken('JD_LOGIN_TEST_TOKEN');
     }
   };
 
   const startPollingLoginStatus = (token: string) => {
-    // SSE 流式接收登录状态
-    try {
-      const sse = new RNSSE(`${process.env.EXPO_PUBLIC_BACKEND_BASE_URL}/api/v1/auth/login-status?token=${token}`, {
-        method: 'GET',
-        headers: { 'Content-Type': 'text/event-stream' },
-      });
+    // 使用轮询方式检测登录状态（SSE在移动端兼容性不佳）
+    let pollCount = 0;
+    const maxPolls = 60; // 最多轮询60次（约30秒）
+    
+    const pollStatus = async () => {
+      try {
+        /**
+         * 服务端文件：server/src/routes/auth.ts
+         * 接口：GET /api/v1/auth/login-status?token=xxx
+         * 返回：{ status: 'pending' | 'scanned' | 'confirmed' | 'expired' }
+         */
+        const response = await fetch(
+          `${process.env.EXPO_PUBLIC_BACKEND_BASE_URL}/api/v1/auth/login-status?token=${encodeURIComponent(token)}`
+        );
 
-      sse.addEventListener('message', (event) => {
-        if (!event.data || event.data === '[DONE]') {
-          sse.close();
-          return;
-        }
-
-        try {
-          const data = JSON.parse(event.data as string);
+        if (response.ok) {
+          const data = await response.json();
           if (data.status === 'scanned') {
             setStep('scanned');
           } else if (data.status === 'confirmed') {
@@ -88,40 +91,28 @@ export default function LoginScreen() {
             setTimeout(() => {
               router.back();
             }, 1500);
-            sse.close();
+            return; // 登录成功，停止轮询
           } else if (data.status === 'expired') {
             // 二维码过期，重新生成
             generateQRCode();
+            return;
           }
-        } catch (e) {
-          // 忽略解析错误
         }
-      });
+        
+        pollCount++;
+        if (pollCount < maxPolls) {
+          setTimeout(pollStatus, 500); // 每500ms轮询一次
+        }
+      } catch (error) {
+        pollCount++;
+        if (pollCount < maxPolls) {
+          setTimeout(pollStatus, 500);
+        }
+      }
+    };
 
-      sse.addEventListener('error', () => {
-        // SSE 连接失败，模拟扫码状态（演示用）
-        setTimeout(() => {
-          setStep('scanned');
-          setTimeout(() => {
-            setStep('success');
-            setTimeout(() => {
-              router.back();
-            }, 1500);
-          }, 2000);
-        }, 3000);
-      });
-    } catch (error) {
-      // 模拟扫码流程（演示用）
-      setTimeout(() => {
-        setStep('scanned');
-        setTimeout(() => {
-          setStep('success');
-          setTimeout(() => {
-            router.back();
-          }, 1500);
-        }, 2000);
-      }, 5000);
-    }
+    // 开始轮询
+    pollStatus();
   };
 
   const startAnimations = () => {
@@ -283,10 +274,29 @@ export default function LoginScreen() {
 
         {/* Refresh */}
         {step === 'waiting' && (
-          <TouchableOpacity style={styles.refreshButton} onPress={generateQRCode}>
-            <Ionicons name="refresh" size={18} color="#00F0FF" />
-            <Text style={styles.refreshText}>刷新二维码</Text>
-          </TouchableOpacity>
+          <>
+            <TouchableOpacity style={styles.refreshButton} onPress={generateQRCode}>
+              <Ionicons name="refresh" size={18} color="#00F0FF" />
+              <Text style={styles.refreshText}>刷新二维码</Text>
+            </TouchableOpacity>
+            
+            {/* Debug: 模拟扫码测试按钮 */}
+            <TouchableOpacity 
+              style={styles.debugButton} 
+              onPress={async () => {
+                if (!loginToken) return;
+                try {
+                  await fetch(`${process.env.EXPO_PUBLIC_BACKEND_BASE_URL}/api/v1/auth/scan-callback`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: loginToken, action: 'confirm' }),
+                  });
+                } catch (e) {}
+              }}
+            >
+              <Text style={styles.debugText}>测试扫码 (Debug)</Text>
+            </TouchableOpacity>
+          </>
         )}
       </View>
 
@@ -485,6 +495,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#00F0FF',
     fontWeight: '600',
+  },
+  debugButton: {
+    marginTop: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,100,100,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,100,100,0.3)',
+  },
+  debugText: {
+    fontSize: 12,
+    color: '#FF6464',
+    fontWeight: '500',
   },
   footer: {
     alignItems: 'center',

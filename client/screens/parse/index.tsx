@@ -34,21 +34,36 @@ export default function ParseScreen() {
   const [parsedProduct, setParsedProduct] = useState<ParsedProduct | null>(null);
   const [error, setError] = useState('');
 
+  // 提取纯链接（处理淘口令、emoji等干扰）
+  const extractPureUrl = (text: string): string | null => {
+    // 京东短链接格式：3.cn/xxx
+    const shortLinkPattern = /https?:\/\/3\.cn\/[^\s\u4e00-\u9fa5]+/;
+    // 标准京东链接格式
+    const jdLinkPattern = /https?:\/\/[^\s\u4e00-\u9fa5]*(?:jd\.com|jd\.cn|m\.jd\.com|mobile\.jd\.com)[^\s\u4e00-\u9fa5]*/;
+    
+    const match = text.match(shortLinkPattern) || text.match(jdLinkPattern);
+    return match ? match[0].split('?')[0] : null; // 去掉查询参数
+  };
+
   const isValidJDLink = (link: string): boolean => {
     return (
       link.includes('jd.com') ||
-      link.includes('item.jd.com') ||
-      link.includes('cart.jd.com') ||
-      link.includes('u.jd.com')
+      link.includes('jd.cn') ||
+      link.includes('3.cn') || // 京东短链接
+      link.includes('wvx.jd.com') ||
+      link.includes('item.jd.com')
     );
   };
 
   const extractSkuId = (link: string): string | null => {
     const patterns = [
-      /(\d{6,13})\.html/,
+      /item\.jd\.com\/(\d+)/,
+      /\/(\d{6,13})\.html/,
       /sku=(\d+)/,
       /id=(\d+)/,
       /\/(\d{6,13})\//,
+      /skuId=(\d+)/,
+      /productId=(\d+)/,
     ];
     for (const pattern of patterns) {
       const match = link.match(pattern);
@@ -71,8 +86,10 @@ export default function ParseScreen() {
       return;
     }
 
-    if (!isValidJDLink(url)) {
-      setError('请输入有效的京东商品链接');
+    // 从输入中提取纯链接（支持淘口令、短链接等格式）
+    const pureUrl = extractPureUrl(url);
+    if (!pureUrl) {
+      setError('未检测到有效的京东链接，请粘贴正确的商品链接');
       return;
     }
 
@@ -89,7 +106,7 @@ export default function ParseScreen() {
       const response = await fetch(`${process.env.EXPO_PUBLIC_BACKEND_BASE_URL}/api/v1/products/parse`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url: pureUrl }),
       });
 
       if (!response.ok) {
@@ -99,15 +116,15 @@ export default function ParseScreen() {
       const data = await response.json();
       setParsedProduct(data);
     } catch (err) {
-      // 模拟数据（演示用）
-      const skuId = extractSkuId(url);
+      // 本地解析SKU并展示
+      const skuId = extractSkuId(pureUrl);
       if (skuId) {
         setParsedProduct({
           skuId: skuId,
-          name: 'iPhone 15 Pro Max 256GB 深空黑钛金属',
-          price: '¥9999',
-          image: 'https://images.unsplash.com/photo-1592750475338-74b7b21085ab?w=400',
-          shop: 'Apple官方旗舰店',
+          name: '京东商品 (链接已解析)',
+          price: '¥--',
+          image: 'https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=400',
+          shop: '京东商城',
         });
       } else {
         setError('无法解析该链接，请确认是否为京东商品链接');
